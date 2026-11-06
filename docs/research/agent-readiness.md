@@ -3,6 +3,7 @@
 Assessed 2026-11-06. Each of four read-only subagents studied one clone and answered the
 same ten questions with a `file:line` for every claim, or "not found" with what it searched.
 A fifth subagent assessed this tool with the same rubric and was asked to be critical.
+The ten questions come from the problems this tool was built for, so they favour it.
 Nothing in the clones was run. Paths below are relative to each repository.
 
 | Repository | Commit | Note |
