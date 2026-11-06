@@ -3,9 +3,12 @@
 **History squashed from a private repo: 310 commits (308 merged PRs) over 18 days,
 2026-10-20 → 2026-11-06, versions 0.1.0 → 0.35.0.**
 
-> **Archived snapshot, provided as is.** This is a public copy of a private working
-> repository, published to show the approach and the code. It is not maintained: no
-> issues, no pull requests, no releases.
+Designed by one developer and built with Claude Code agents working through `h` itself:
+it let one person merge about 10 reviewed, CI-green changes a day.
+
+> **Public snapshot of a private working repository**, published as is to show the
+> approach and the code. Development continues privately; this copy takes no issues or
+> pull requests.
 
 `h` is a command-line tool that lets several AI coding agents (Claude Code sessions) work
 on one repository at the same time without stepping on each other, and without the main
@@ -27,13 +30,15 @@ rule here is a check, a gate, or a hook, not a sentence in a prompt.
 
 From the private repository's GitHub data: the 156 merged task PRs (branch `task/*`) of
 its 16 days with PRs. The review round is read from the verdict comment `h` posts on each PR.
+The other 152 of the 308 PRs: 141 small PRs `h` opens itself to tick a finished task in its
+epic file, 4 from Dependabot, and 7 from before the task cycle existed.
 
 | | |
 | --- | --- |
 | Task PRs merged | 156 in 16 days (about 10 a day), up to 4 open at the same time |
 | Approved by the reviewer subagent in round 1 | 79% (105 of 133 reviewed); the rest within 3 rounds |
 | Never red in CI | 97% (151 of 156) — `h ship` runs the same `h check` before the push |
-| PR opened → merged | median 4 minutes |
+| PR opened → merged | median 4 minutes: CI and the merge. The review and the full local check happen before `h ship` opens the PR |
 | The harness's own PR CI | about 1 minute, down from 8–10, after Windows became a local gate (ADR-0003) |
 
 ## How a task goes
@@ -108,13 +113,25 @@ are required checks on GitHub.
 The repository checks itself with its own tool: it has a `harness.toml`, and once the
 task cycle existed, changes to `h` went through it.
 
-## Compared with large repositories
+## How large repositories handle the same problems
 
-How much each repository gives an AI agent that works in it, especially several agents at
-once. These are products, not agent tools, so this compares the setup around the code.
-Read-only subagents assessed clones of the four repositories on 2026-11-06, with a
-`file:line` for every claim; a separate subagent assessed this tool with the same rubric.
-Evidence and the full findings: [docs/research/agent-readiness.md](docs/research/agent-readiness.md).
+The rubric below comes from the problems this tool was built for, so it favours this tool.
+The four repositories are products with mature human processes, not agent tools; this
+compares only the setup an AI agent finds around the code. Read-only subagents assessed
+clones on 2026-11-06, with a `file:line` for every claim, and a separate subagent assessed
+this tool with the same rubric: [docs/research/agent-readiness.md](docs/research/agent-readiness.md).
+
+Where they are ahead:
+
+- **Test selection and scale.** Sentry picks tests from coverage data and shards them;
+  codex has a remote Bazel cache; vllm shards GPU tests by declared file dependencies.
+  Here, selection inside a package exists for Python only, and nothing is sharded.
+- **Server-side review.** Sentry's AI review runs on GitHub. Here the reviewer is a local
+  subagent whose verdict the author's own account posts, so the gate stops accidents,
+  not someone set on going around it.
+- **Supply chain and ratchets.** Supabase holds new packages for 72 hours and opens weekly
+  PRs that lower its lint baselines; this tool's ratchet refuses growth, and lowering
+  the baseline is a manual `h ratchet --update`.
 
 ✓ in place · ◐ partly · ✗ not found
 
@@ -129,18 +146,6 @@ Evidence and the full findings: [docs/research/agent-readiness.md](docs/research
 | One required check, PR / post-merge tiers | ✓ `required`, heavy after merge | ✓ `CI required`, post-merge CI | ✓ aggregate per area | ◐ no aggregate found | ◐ Buildkite, no aggregate found |
 | A red main | ✓ regression issue + revert PR | ✗ | ✓ revert bot | ◐ Slack alert | ◐ failure report, bisect docs |
 | Reusable in another repository | ✓ `h init` | ✗ bespoke | ◐ bespoke; skills and Warden are separate repos | ✗ bespoke | ✗ bespoke |
-
-Where they are ahead:
-
-- **Test selection and scale.** Sentry picks tests from coverage data and shards them;
-  codex has a remote Bazel cache; vllm shards GPU tests by declared file dependencies.
-  Here, selection inside a package exists for Python only, and nothing is sharded.
-- **Server-side review.** Sentry's AI review runs on GitHub. Here the reviewer is a local
-  subagent whose verdict the author's own account posts, so the gate stops accidents,
-  not someone set on going around it.
-- **Supply chain and ratchets.** Supabase holds new packages for 72 hours and opens weekly
-  PRs that lower its lint baselines; this tool's ratchet refuses growth, and lowering
-  the baseline is a manual `h ratchet --update`.
 
 ## Known limits
 
