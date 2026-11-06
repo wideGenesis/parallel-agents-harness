@@ -1,0 +1,26 @@
+# The harness repo checks itself with its own tool. polygon/ has its own harness.toml.
+[project]
+name = "harness"
+base = "main"
+
+# The oldest h that runs this project; raised in the PR that changes h's behaviour.
+[harness]
+version = ">=0.2.0"
+
+[stacks.python]
+root = "harness"
+
+[stacks.rust]
+enabled = false
+
+[stacks.ts]
+enabled = false
+
+[ship]
+footer = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+# Agents merge their own green PRs here (agreed 2026-10-21).
+merge = "agent"
+
+# No real deploy here: "deployed" = the CI run on the merge commit in main is green.
+[deploy]
+workflow = "ci.yml"

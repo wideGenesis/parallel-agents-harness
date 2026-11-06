@@ -1,0 +1,126 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  # push: a group per commit — a pending push run is never replaced by the next push and
+  # left unchecked and undeployed; PR runs share one group and cancel the older.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # A docs-only PR (e.g. an epic sync) skips the suite: `h affected`, the same rule as the
+  # agent's `h check`. So does a docs-only push to main, judged against the previous
+  # tip; any other push and the merge queue run everything.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.affected.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the merge-base with the PR base, the previous tip on push
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          save-cache: false # the harness job keeps the cache
+      - name: Affected
+        id: affected
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          # push: a docs-only diff from the previous tip skips too; a new branch or
+          # a tip lost to a force-push is not in the clone, so it runs
+          BEFORE: ${{ github.event_name == 'push' && github.event.before || '' }}
+        run: |
+          if [ -z "$BASE" ] && [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            BASE=$BEFORE
+          fi
+          if [ -z "$BASE" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          json=$(uv run --locked --project harness h affected --json --base "$BASE")
+          docs_only=$(jq -r .docs_only <<< "$json")
+          echo "docs only: $docs_only"
+          echo "run=$([ "$docs_only" = true ] && echo false || echo true)" >> "$GITHUB_OUTPUT"
+
+  harness:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    # Ubuntu only (ADR-0003): `h` runs on the user's Windows machine, where `h check` already
+    # runs the whole suite before ship; a cloud Windows leg repeated it at 8–10 minutes a PR.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: harness
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          # Only main writes the cache; a PR restores main's and never changes it.
+          save-cache: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+      # The deadcode tests run the real tools on polygon: no skip when one is missing.
+      # sqlx-cli: test_sqlx.py runs the sql step on a real Postgres in CI.
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: cargo-machete,sqlx-cli
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: "12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: lts/*
+      # A server for the sql step's throwaway databases, as check.yml starts one:
+      # docker picks the port, `pg_isready -h` probes TCP, the container goes with -v.
+      - name: Postgres
+        env:
+          PG: h-test-pg-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          docker rm -f -v "$PG" > /dev/null 2>&1 || true
+          docker run -d --name "$PG" -e POSTGRES_PASSWORD=postgres -p 127.0.0.1::5432 postgres:18.6 > /dev/null
+          port=$(docker port "$PG" 5432/tcp | head -1 | sed 's/.*://')
+          [ -n "$port" ] || { echo "::error::docker published no port for $PG"; exit 1; }
+          for _ in $(seq 60); do
+            if docker exec "$PG" pg_isready -h 127.0.0.1 -U postgres -q; then
+              echo "H_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:$port/postgres" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::postgres did not become ready in 60s"
+          exit 1
+      - run: uv run --locked pytest -q
+      - run: uv run --locked h -C ../polygon config
+      - run: uv run --locked h -C .. skills sync --check
+      # The harness gates itself with its own tool (fmt + lint; ruff comes via uvx).
+      - run: uv run --locked h -C .. check --full --only fmt,lint,deadcode
+      - name: Postgres down
+        if: always()
+        env:
+          PG: h-test-pg-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm -f -v "$PG" > /dev/null 2>&1 || true
+
+  # The only required check: skipped jobs count as success, failed or cancelled do not
+  # (SUMMARY #9 — the same gate in sentry, codex and ruff).
+  required:
+    if: always()
+    needs: [changes, harness]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: All required jobs passed or were skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) exit 1 ;; esac
+          done

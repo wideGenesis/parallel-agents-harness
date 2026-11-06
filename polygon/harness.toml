@@ -1,0 +1,21 @@
+# Reference project for harness tests: two packages per stack, app depends on lib.
+[project]
+name = "polygon"
+base = "main"
+
+[harness]
+version = ">=0.2.0"
+
+[worktrees]
+dir = ".worktrees"
+include = [".env"]
+
+[generated]
+paths = ["**/*.gen.ts", "crates/*/src/generated/**"]
+
+[limits]
+heavy_jobs = 3
+
+[stacks.rust]
+[stacks.python]
+[stacks.ts]

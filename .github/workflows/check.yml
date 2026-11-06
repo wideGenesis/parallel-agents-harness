@@ -1,0 +1,352 @@
+# Reusable CI for projects set up with `h init`: the same `h check` the agent runs
+# locally, with `h` from the harness commit the caller pins. Called from the project's
+# .github/workflows/harness.yml; its `required` job is the one branch-protection check.
+name: harness check
+
+on:
+  workflow_call:
+    inputs:
+      base:
+        description: Base ref for affected packages; empty — the PR base, a full run on push and in the merge queue
+        type: string
+        default: ""
+      dir:
+        description: Project root inside the repository (where harness.toml lives)
+        type: string
+        default: "."
+      full:
+        description: Check every package whatever the diff (the harness's own template test)
+        type: boolean
+        default: false
+      runs-on:
+        description: A runner label, or a JSON list of labels — '["self-hosted", "linux"]'
+        type: string
+        default: ubuntu-latest
+      setup:
+        description: A project script (path from `dir`) run before `h check`; what it writes to $GITHUB_ENV / $GITHUB_PATH reaches `h check`; empty — none
+        type: string
+        default: ""
+      postgres-image:
+        description: Postgres started for the tests, DATABASE_URL set for `h check`; empty — no database
+        type: string
+        default: ""
+      timeout-minutes:
+        description: Time limit of the `check` job; `[ci] timeout-minutes` in harness.toml
+        type: number
+        default: 30
+      node-version:
+        description: Node for the ts steps; `[ci] node-version` in harness.toml. A pinned major, not lts/* — LTS moved to 26 under every project at once
+        type: string
+        default: "24"
+      upload-logs:
+        description: When `h check` fails or the job is cancelled, upload its step logs as the run artifact h-check-logs-<attempt>; `[ci] upload-logs` in harness.toml. Unlike the job log, they are not masked
+        type: boolean
+        default: true
+      pnpm-version:
+        description: Used only when package.json has no packageManager field
+        type: string
+        default: "12"
+
+permissions:
+  contents: read
+
+jobs:
+  # What the PR touches, by the same `h affected` the agent's `h check` uses.
+  # Push and merge queue: everything. A docs-only PR skips `check` (skipped = ok), and so
+  # does a push whose diff from the previous tip is docs-only: the previous tip
+  # only decides that, a push with code still checks everything — unless a PR run checked
+  # this very tree green and main's last verdict is green (`h ci reused`).
+  changes:
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    timeout-minutes: 10
+    # actions/pull-requests read: the push run finds the merged PR and its check's artifact.
+    # The caller's check job grants them; harness.yml from `h init` does.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.dir }}
+    outputs:
+      # reused without [check] heavy: nothing left to run on main
+      run: ${{ steps.affected.outputs.run == 'true' && !(steps.reuse.outputs.reuse == 'true' && steps.reuse.outputs.heavy != 'true') }}
+      stacks: ${{ steps.affected.outputs.stacks }} # JSON list
+      base: ${{ steps.affected.outputs.base }}
+      tier: ${{ steps.reuse.outputs.reuse == 'true' && 'heavy' || steps.affected.outputs.tier }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # the merge-base with the PR base must be reachable for `h affected/check --base`
+          fetch-depth: 0
+          persist-credentials: false
+      # `$/` (self-repository reference): the action from this workflow's own repository at
+      # the running commit, i.e. the harness SHA the caller pins. `./` would resolve in the
+      # caller's checkout. https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#example-using-an-action-in-the-same-repository-as-the-workflow-at-the-running-commit-recommended
+      # Verified 2026-10-25 (`$/` in jobs.uses and here): it resolved to
+      # <harness repo>/.github/actions/setup-h@<run sha>, installed h, h check green.
+      - uses: $/.github/actions/setup-h
+        with:
+          uv-cache: "false"
+      - name: Affected
+        id: affected
+        env:
+          BASE: ${{ !inputs.full && (inputs.base || github.event.pull_request.base.sha) || '' }}
+          BEFORE: ${{ !inputs.full && github.event_name == 'push' && github.event.before || '' }}
+          # [check] heavy steps: a PR skips them unless labelled full-ci; push to
+          # main, the merge queue and `full` run them.
+          TIER: ${{ (github.event_name == 'pull_request' && !inputs.full && !contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'pr' || 'full' }}
+        run: |
+          if [ -n "$BASE" ]; then
+            h affected --json --base "$BASE" > "$RUNNER_TEMP/affected.json"
+            docs_only=$(jq -r .docs_only "$RUNNER_TEMP/affected.json")
+            stacks=$(jq -c '[.stacks | to_entries[] | select(.value.all or (.value.affected | length > 0)) | .key]' "$RUNNER_TEMP/affected.json")
+          else
+            docs_only=false
+            # A new branch (0000…) or a tip lost to a force-push is not in the clone: full run.
+            if [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              docs_only=$(h affected --json --base "$BEFORE" | jq -r .docs_only) || docs_only=false
+            fi
+            stacks=$(h config --json | jq -c '.stacks | keys')
+          fi
+          echo "docs only: $docs_only; stacks: $stacks"
+          if [ "$docs_only" = true ]; then
+            echo "check skipped: only [check] docs paths changed since ${BASE:-$BEFORE}" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            echo "run=$([ "$docs_only" = true ] && echo false || echo true)"
+            echo "stacks=$stacks"
+            echo "base=$BASE"
+            echo "tier=$TIER"
+            # a push with code whose previous tip is in the clone may reuse a PR's check
+            if [ -z "$BASE" ] && [ "$docs_only" != true ] && [ -n "$BEFORE" ] \
+              && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              echo "before=$BEFORE"
+            fi
+          } >> "$GITHUB_OUTPUT"
+      - name: Reuse
+        id: reuse
+        if: steps.affected.outputs.before != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ steps.affected.outputs.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          out="$RUNNER_TEMP/reuse.json"
+          h ci reused --json --sha "$SHA" --before "$BEFORE" > "$out" \
+            || echo '{"reuse": false, "reason": "h ci reused failed: checking everything"}' > "$out"
+          echo "main: $(jq -r .reason "$out")" | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "reuse=$(jq -r .reuse "$out")"
+            echo "heavy=$(jq -r '.heavy // false' "$out")"
+          } >> "$GITHUB_OUTPUT"
+      # A marker `h task done` reads: this run's skipped check is a reused verdict,
+      # not a docs-only skip. Keep the name in step with gh.REUSE_STEP.
+      - name: Reuse the PR check
+        if: steps.reuse.outputs.reuse == 'true'
+        run: echo "main takes the PR's green check of this tree — the summary names the run"
+
+  check:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.dir }}
+    env:
+      # A fresh checkout never reuses incremental artifacts; file:line backtraces are enough
+      # in CI and the debug info halves target/.
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      # Caches: every job restores main's; only a push to main saves (SUMMARY #12).
+      SAVE_CACHE: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # the merge-base with the PR base must be reachable for `h affected/check --base`
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: $/.github/actions/setup-h
+      - name: pnpm version
+        id: pnpm
+        if: contains(fromJSON(needs.changes.outputs.stacks), 'ts')
+        env:
+          PNPM_VERSION: ${{ inputs.pnpm-version }}
+        run: |
+          if [ -f package.json ] && jq -e '.packageManager' package.json > /dev/null; then
+            echo "version=" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$PNPM_VERSION" >> "$GITHUB_OUTPUT"
+          fi
+      # toolchains only for the stacks this change affects
+      - name: Rust components
+        id: rust
+        if: contains(fromJSON(needs.changes.outputs.stacks), 'rust')
+        # rustup on the runner image reads rust-toolchain.toml; fmt and clippy are h check steps.
+        # mold only when the project links with it (.cargo/config.toml, h doctor's template).
+        run: |
+          rustup component add rustfmt clippy
+          if grep -qs mold .cargo/config.toml; then echo "mold=true" >> "$GITHUB_OUTPUT"; fi
+          # the sqlx-cli of the project's sqlx crate (Cargo.lock), only for a sqlx project
+          echo "sqlx=$(h config --json | jq -r '.stacks.rust.sqlx // empty')" >> "$GITHUB_OUTPUT"
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
+        if: steps.rust.outputs.mold
+      # The deadcode step's Rust tool, cargo-deny for the deps step where the project
+      # has deny.toml, sqlx-cli for the sql step of a sqlx project and
+      # cargo-nextest for the test step — without it test binaries run one at a time
+      # (65 binaries took 307 s in a row on a pilot project): prebuilt binaries, no compile. deptry, vulture and knip are the project's own
+      # dependencies — uv and pnpm install them.
+      # Exact versions: a tool's new release must not turn a project red with no
+      # change in it; h releases raise them, as they do the action pins. sqlx-cli follows
+      # the project's sqlx: `cargo sqlx prepare` writes the cache its macros read.
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        if: contains(fromJSON(needs.changes.outputs.stacks), 'rust')
+        with:
+          tool: cargo-machete@0.9.2,cargo-deny@0.20.2,cargo-nextest@0.9.149${{ steps.rust.outputs.sqlx && format(',sqlx-cli@{0}', steps.rust.outputs.sqlx) || '' }}
+      # cache-bin off: on save, rust-cache deletes from ~/.cargo/bin everything that
+      # was there before it ran — rustup and cargo on a self-hosted runner. Nothing of ours is
+      # installed there after it (cargo-machete comes first), so caching the dir buys nothing.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: contains(fromJSON(needs.changes.outputs.stacks), 'rust')
+        with:
+          workspaces: ${{ inputs.dir }} -> target
+          save-if: ${{ env.SAVE_CACHE }}
+          cache-bin: "false"
+      # Node before pnpm: the pnpm installer runs the first `npm` on PATH, and on a
+      # self-hosted runner that is the runner's own npm, broken since runner 2.338.0
+      # ("Cannot find module '../lib/cli.js'", pnpm/action-setup#251).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: contains(fromJSON(needs.changes.outputs.stacks), 'ts')
+        with:
+          node-version: ${{ inputs.node-version }}
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: contains(fromJSON(needs.changes.outputs.stacks), 'ts')
+        with:
+          version: ${{ steps.pnpm.outputs.version }}
+      - name: pnpm store
+        id: store
+        if: contains(fromJSON(needs.changes.outputs.stacks), 'ts')
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: pnpm-cache
+        if: contains(fromJSON(needs.changes.outputs.stacks), 'ts')
+        with:
+          path: ${{ steps.store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles(format('{0}/pnpm-lock.yaml', inputs.dir)) }}
+          restore-keys: pnpm-${{ runner.os }}-
+      - name: pnpm install
+        if: contains(fromJSON(needs.changes.outputs.stacks), 'ts')
+        run: pnpm install --frozen-lockfile
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: >-
+          contains(fromJSON(needs.changes.outputs.stacks), 'ts') && env.SAVE_CACHE == 'true'
+          && steps.pnpm-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ steps.store.outputs.path }}
+          key: ${{ steps.pnpm-cache.outputs.cache-primary-key }}
+      # Postgres for the tests: a step, not `services:`. On a persistent self-hosted
+      # runner the container and its volume outlive the job unless removed with `-v`, before
+      # (a cancelled run left one) and after; the port is docker's pick — a fixed one is
+      # already taken on a shared machine. `pg_isready -h` goes over TCP: the image's init
+      # server listens on the socket only, so a socket probe says ready too early.
+      # Only when the run has a test step to feed: `h check --plan` asks the same plan the
+      # next step runs, after the toolchains are in place (a missing pnpm skips ts test).
+      # The project's own preparation: programs its tests need that no stack
+      # toolchain brings (e.g. a system library from a production image). A path, run by bash.
+      - name: Project setup
+        if: inputs.setup != ''
+        env:
+          SETUP: ${{ inputs.setup }}
+        run: |
+          [ -f "$SETUP" ] || { echo "::error::setup script $SETUP not found in $(pwd)"; exit 1; }
+          bash "$SETUP"
+      - name: Postgres
+        if: inputs.postgres-image != ''
+        env:
+          IMAGE: ${{ inputs.postgres-image }}
+          PG: h-ci-pg-${{ github.run_id }}-${{ github.run_attempt }}
+          BASE: ${{ needs.changes.outputs.base }}
+          TIER: ${{ needs.changes.outputs.tier }}
+        run: |
+          if [ -n "$BASE" ]; then
+            plan=$(h check --plan --json --tier "$TIER" --base "$BASE")
+          else
+            plan=$(h check --plan --json --tier "$TIER" --full)
+          fi
+          if ! jq -e 'any(.[]; (.kind == "test" or .kind == "sql") and .runs)' <<< "$plan" > /dev/null; then
+            echo "no test step runs: no database"
+            exit 0
+          fi
+          docker rm -f -v "$PG" > /dev/null 2>&1 || true
+          docker run -d --name "$PG" -e POSTGRES_PASSWORD=postgres -p 127.0.0.1::5432 "$IMAGE" > /dev/null
+          port=$(docker port "$PG" 5432/tcp | head -1 | sed 's/.*://')
+          [ -n "$port" ] || { echo "::error::docker published no port for $PG"; exit 1; }
+          for _ in $(seq 60); do
+            if docker exec "$PG" pg_isready -h 127.0.0.1 -U postgres -q && (exec 3<> "/dev/tcp/127.0.0.1/$port") 2> /dev/null; then
+              echo "DATABASE_URL=postgres://postgres:postgres@127.0.0.1:$port/postgres" >> "$GITHUB_ENV"
+              echo "postgres ready on 127.0.0.1:$port"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::postgres did not become ready in 60s"
+          docker logs "$PG"
+          exit 1
+      - name: h check
+        env:
+          BASE: ${{ needs.changes.outputs.base }}
+          TIER: ${{ needs.changes.outputs.tier }}
+        run: |
+          if [ -n "$BASE" ]; then
+            h check --tier "$TIER" --base "$BASE"
+          else
+            h check --tier "$TIER" --full
+          fi
+      # The tree a green PR check proved: the PR checks GitHub's merge commit, so
+      # a squash merge with main unmoved lands this tree, and main's run reuses this check.
+      - name: Record the checked tree
+        id: checked
+        if: success() && github.event_name == 'pull_request'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          mkdir -p "$RUNNER_TEMP/h-checked"
+          printf '{"tree": "%s", "head": "%s", "base": "%s"}\n' "$tree" "$HEAD_SHA" "$BASE_SHA" \
+            > "$RUNNER_TEMP/h-checked/checked.json"
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+      - name: Upload the checked tree
+        if: steps.checked.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: h-checked-${{ steps.checked.outputs.tree }}
+          path: ${{ runner.temp }}/h-checked/
+          retention-days: 14
+          overwrite: true
+      # The step logs outlive a lost job log (GitHub answered BlobNotFound for a
+      # failed job's log). `h ci watch` downloads them when the job log is gone. Nothing on
+      # green; hidden files on: everything is under .artifacts/.
+      - name: Upload step logs
+        if: (failure() || cancelled()) && inputs.upload-logs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: h-check-logs-${{ github.run_attempt }}
+          path: ${{ inputs.dir }}/.artifacts/check/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      # A failed job keeps the database's last words before they go with it (why
+      # a test database died was lost with its container).
+      - name: Postgres down
+        if: always() && inputs.postgres-image != ''
+        env:
+          PG: h-ci-pg-${{ github.run_id }}-${{ github.run_attempt }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" != success ]; then
+            docker inspect -f '{{json .State}}' "$PG" 2>&1 || true
+            docker logs --tail 200 "$PG" 2>&1 || true
+          fi
+          docker rm -f -v "$PG" > /dev/null 2>&1 || true

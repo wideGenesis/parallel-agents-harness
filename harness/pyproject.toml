@@ -1,0 +1,38 @@
+[project]
+name = "harness-cli"
+version = "0.35.0"
+description = "Deterministic rails for parallel coding agents (Rust / Python / TS)"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+h = "harness.cli:main"
+
+[dependency-groups]
+dev = [
+    "deptry>=0.25.1",
+    "pytest>=8",
+    "pytest-testmon>=2.2.0",
+    "pytest-xdist>=3.8.0",
+    "ruff==0.17.2",
+    "vulture>=2.16",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "harness"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Parallel: up to 8 workers — one per core on a CI runner, at most 8 locally so up
+# to seven agent sessions running `h check` at once do not each take all 24 cores. Gains
+# stop past ~8 anyway: the cost is starting git processes, not CPU. `-n 0` to debug serially.
+addopts = "-n auto --maxprocesses=8"
+
+# One import order whatever directory ruff runs from: `h fmt` from the repo root
+# saw `harness` as third-party, lint from harness/ as first-party.
+[tool.ruff.lint.isort]
+known-first-party = ["harness"]

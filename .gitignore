@@ -1,0 +1,25 @@
+# Research clones — untrusted, not ours
+/competitor_repos/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+dist/
+
+# Rust
+target/
+
+# TS
+node_modules/
+
+# Harness runtime
+.worktrees/
+.artifacts/
+
+# harness (h init)
+/.worktrees/
+/.artifacts/
+.harness-task.json
+.env.harness

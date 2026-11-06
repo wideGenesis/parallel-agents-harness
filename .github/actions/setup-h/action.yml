@@ -1,0 +1,29 @@
+name: setup-h
+description: >-
+  Install uv and the harness CLI `h` from the harness commit this action runs at.
+  The runner downloads the whole harness repository for an action, so a project's CI gets
+  the same `h` as its pinned workflow without a token for the harness repository.
+inputs:
+  uv-cache:
+    description: setup-uv enable-cache — `false` for jobs that only run h itself
+    default: auto
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      with:
+        enable-cache: ${{ inputs.uv-cache }}
+        # Only main writes the cache: a PR restores main's and never changes it.
+        save-cache: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+    # Into this job's own dirs: the runner empties runner.temp per job, so an `h`
+    # left in ~/.local/bin by another job, pin or runner on a persistent machine cannot make
+    # the install fail ("Executable already exists") or stand in for this pin's `h`.
+    - name: Install h
+      shell: bash
+      env:
+        UV_TOOL_DIR: ${{ runner.temp }}/h-tool
+        UV_TOOL_BIN_DIR: ${{ runner.temp }}/h-bin
+      run: |
+        uv tool install "$GITHUB_ACTION_PATH/../../../harness"
+        echo "$UV_TOOL_BIN_DIR" >> "$GITHUB_PATH"
+        "$UV_TOOL_BIN_DIR/h" --version

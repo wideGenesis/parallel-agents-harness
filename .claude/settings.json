@@ -1,0 +1,92 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "h",
+            "args": [
+              "hook",
+              "post-edit"
+            ]
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "h",
+            "args": [
+              "hook",
+              "pre-write"
+            ]
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "h",
+            "args": [
+              "hook",
+              "pre-compact"
+            ]
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "h",
+            "args": [
+              "hook",
+              "session-start"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Bash(gh *ac-confirmed*)",
+      "Bash(*verdict.json*)",
+      "Bash(h ci reset*)",
+      "Bash(h review reset*)",
+      "Bash(h task confirm*)",
+      "Bash(gh api*statuses*)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push * --force)",
+      "Bash(git push *origin main*)",
+      "Bash(git push *:main*)",
+      "Bash(git reset --hard*)",
+      "Bash(git branch -D*)",
+      "Bash(git clean -f*)",
+      "Bash(h * ci reset*)",
+      "Bash(h * review reset*)",
+      "Bash(h * task confirm*)",
+      "Bash(h deps approve*)",
+      "Bash(h * deps approve*)",
+      "Bash(h task*--steal*)",
+      "Bash(h * task*--steal*)",
+      "Bash(h task*--force*)",
+      "Bash(h * task*--force*)",
+      "Bash(h task*--discard*)",
+      "Bash(h * task*--discard*)"
+    ]
+  }
+}

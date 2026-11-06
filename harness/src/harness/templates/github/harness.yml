@@ -1,0 +1,91 @@
+# Installed by `h init`: CI runs the same `h check` the agent runs locally.
+# The harness workflow is pinned by full SHA; a newer harness = a new SHA here.
+# Branch protection: require the single check `required`.
+# Own runners or a database for the tests: `[ci] runs-on = ["self-hosted", ...]` and
+# `postgres-image = "postgres:18"` in harness.toml, then rerun `h init` (it redraws this file
+# while you have not edited it, and re-pins it to each new h release). Slow runners:
+# `timeout-minutes = 45` there too; the limit of the check job, 30 by default.
+name: harness
+
+on:
+  pull_request:
+    # labeled: `full-ci` on a PR runs the [check] heavy steps too
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: ["{base}"]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  # push: a group per commit — a pending push run is never replaced by the next push and
+  # left unchecked and undeployed; PR runs share one group and cancel the older.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    # actions/pull-requests read: a push to {base} reuses the merged PR's green check of
+    # the same tree instead of checking it again
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: {repo}/.github/workflows/check.yml@{sha} # harness {version}{with}
+
+  # Heavy checks run after the merge: a red main gets an issue, and the agent's
+  # `h task done` refuses and offers `h revert <sha>` — a PR the user merges. A check job
+  # cut off by its time limit ends `cancelled`, which `failure()` misses: no check judged
+  # the commit, so that issue says rerun, not revert.
+  regression:
+    needs: [check]
+    if: always() && github.event_name == 'push' && (needs.check.result == 'failure' || needs.check.result == 'cancelled')
+    runs-on: {runs_on}
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open a regression issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          RESULT: ${{ needs.check.result }}
+          RUN_ID: ${{ github.run_id }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          short=${SHA::10}
+          title="Regression: main is red at $short"
+          [ "$RESULT" != cancelled ] || title="Main run stopped at $short"
+          open=$(gh issue list -R "$GITHUB_REPOSITORY" --label regression --state open \
+            --search "\"$title\" in:title" --json number --jq length 2>/dev/null || echo 0)
+          if [ "$open" != 0 ]; then echo "already open: $title"; exit 0; fi
+          gh label create regression -R "$GITHUB_REPOSITORY" --color b60205 \
+            --description "main went red after a merge — revert first (h revert)" || true
+          if [ "$RESULT" = cancelled ]; then
+            printf '%s\n\n%s\n' "The post-merge run of $SHA was cancelled before a verdict, by its time limit or by hand: $RUN" \
+              "No check judged this commit, so do not revert it: \`gh run rerun $RUN_ID --failed\`. Timed out again: raise \`[ci] timeout-minutes\` in harness.toml." \
+              > "$RUNNER_TEMP/body.md"
+          else
+            printf '%s\n\n%s\n' "The post-merge run of $SHA failed: $RUN" \
+              "Revert first, fix forward after: \`h revert $short --run $RUN\` opens a PR the user merges." \
+              > "$RUNNER_TEMP/body.md"
+          fi
+          gh issue create -R "$GITHUB_REPOSITORY" --label regression --title "$title" \
+            --body-file "$RUNNER_TEMP/body.md"
+
+  # The only required check: skipped jobs count as success, failed or cancelled do not.
+  required:
+    if: always()
+    needs: [check]
+    runs-on: {runs_on}
+    timeout-minutes: 2
+    steps:
+      - name: All required jobs passed or were skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) exit 1 ;; esac
+          done

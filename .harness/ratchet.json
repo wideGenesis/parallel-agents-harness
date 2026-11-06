@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "counts": {
+    "python:skip-test:pytest.mark[skipif]": 3,
+    "python:skip-test:pytest[skip]": 1,
+    "python:suppress:deadcode-whitelist": 1,
+    "python:suppress:noqa[BLE001]": 1,
+    "python:suppress:type: ignore[arg-type]": 1,
+    "python:suppress:type: ignore[misc]": 5
+  }
+}

@@ -1,0 +1,2 @@
+# Deadcode false positives: `<name or path:name>  # reason`. Counted by h ratchet.
+pytest-xdist  # pytest plugin, enabled by addopts `-n auto`, never imported

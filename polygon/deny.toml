@@ -1,0 +1,17 @@
+# The cargo deny policy: its presence turns on the `rust deps` step of h check.
+# polygon has no third-party crates; the step proves h and CI run the tool.
+
+[licenses]
+allow = []
+# Unpublished workspace crates carry no license field.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+# poly-cli → poly-core is a path dependency without a version; allowed for unpublished crates.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

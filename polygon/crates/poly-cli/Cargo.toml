@@ -1,0 +1,8 @@
+[package]
+name = "poly-cli"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+poly-core = { path = "../poly-core" }

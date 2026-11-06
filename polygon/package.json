@@ -1,0 +1,8 @@
+{
+  "name": "polygon",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "knip": "^6.43.0"
+  }
+}

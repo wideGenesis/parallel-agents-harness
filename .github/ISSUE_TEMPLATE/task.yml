@@ -1,0 +1,59 @@
+name: Task
+description: Agent-ready task card. An agent may draft it; the business criteria need your confirmation.
+title: "<short imperative title>"
+labels: ["draft"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What hurts and why — in product or operations terms, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: assumptions
+    attributes:
+      label: Assumptions
+      description: Assumptions made while writing the card; write "none" if there are none.
+      placeholder: "- A1: … — confirmed / awaiting confirmation"
+    validations:
+      required: true
+  - type: textarea
+    id: ac_b
+    attributes:
+      label: AC-B (business, Given/When/Then)
+      description: Written first, in domain language. Confirmed by the user (label ac-confirmed).
+      placeholder: "- [ ] B1: Given …, When …, Then …"
+  - type: textarea
+    id: ac_t
+    attributes:
+      label: AC-T (technical, ← AC-B)
+      description: Each technical criterion traces to a business one.
+      placeholder: "- [ ] T1 (←B1): …"
+  - type: textarea
+    id: verify
+    attributes:
+      label: Verify
+      description: Exact commands or steps that prove the task is done.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size
+      options: ["S", "M", "L"]
+    validations:
+      required: true
+  - type: dropdown
+    id: trivial
+    attributes:
+      label: Trivial
+      description: "yes = no product surface (refactor without behaviour change, test fix, cleanup, docs) — AC may be skipped"
+      options: ["no", "yes"]
+    validations:
+      required: true
+  - type: input
+    id: trivial_reason
+    attributes:
+      label: Trivial reason
